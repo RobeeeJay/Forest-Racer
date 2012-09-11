@@ -1,0 +1,754 @@
+// ForestRacer
+// Written by Robee Shepherd
+
+window.onload = function () {
+	var canvElement = document.getElementById("retrobox");
+	
+	if (canvElement.getContext)
+		new ForestRacer(canvElement);
+};
+
+// Image Preloader
+new Image().src = "tree.png";
+
+function ForestRacer(canElement)
+{
+	// Remember the canvas we will be drawing to
+	this.canMainCanvas = canElement;
+	this.width = this.canMainCanvas.width;
+	this.height = this.canMainCanvas.height;
+	this.conCanvas = this.canMainCanvas.getContext("2d");
+	//this.conCanvas.mozImageSmoothingEnabled = false;
+	this.canBackground = document.createElement("canvas");
+	this.canBackground.width = this.width;
+	this.canBackground.height = this.height;
+	this.conBackground = this.canBackground.getContext("2d");
+
+	this.timeout = null;
+	
+	// Our keys will be tracked via their keydown/up events
+	this.keys = { left: 78, right: 77, up: 65, down: 90, start: 83, debug: 89 };
+	this.keysdown = {};
+	this.score = 0;
+	this.level = 1;
+	this.topscore = 10000;
+	this.speed = 0.1;
+	this.horizon = 0;
+	this.turnspeed = 0.3;
+	this.treespeed = 1;
+	this.accelcounter = 0;
+	this.audcounter = 0;
+	this.linepos = 0;
+	
+	
+	// This defines the current game mode function, like credits, in game, etc
+	this.gamemode = this.gamePreload;
+
+	// We need a target framerate to aim for, rather than go as fast as we can and eat cpu time
+	this.fr_target = 30;
+	this.fr_framems = 1000 / this.fr_target;
+	this.fr_count = 0;
+	this.fr_fps = 0;
+	this.fr_counter = 0;
+	this.fr_timer = 0;
+	
+	// Various game variables
+	this.confTreeWidth = 8;
+	this.confTreeHeight = 50;
+	this.confTreeGap = Math.floor(this.confTreeWidth / 3);
+	this.confTreeArea = this.confTreeWidth + this.confTreeGap;
+	this.confLimit = 15;
+	this.confForestWidth = Math.floor(this.width / this.confTreeArea) + this.confLimit;
+	this.confFramesPerLevel = 30 * 60;
+	this.confMaxSpeed = 0.5;
+	this.confMinSpeed = 0.05;
+	this.confMaxLevel = 13;
+	this.confTreeCap = 0.1;
+	this.confSize = 8;
+	this.confCrashSteps = 5;
+	this.confMountainHeight = 7;
+	this.confOverTime = 1000 * 5;
+	this.confLineGap = this.confLimit / 15;
+
+	this.textTitle1 = "FOREST RACER";
+	this.textTitle2 = "13 Levels of Tree Mayhem";
+	this.textWait = "PLEASE WAIT!!!";
+	this.textStart = "Press S to Start";
+	this.textOver = "GAME OVER";
+	this.textCongrats = "CONGRATULATIONS!!!";
+	this.textHighScore = "New High Score!!!";
+	this.textInstructions1 = "A - Accelerate";
+	this.textInstructions2 = "Z - Decelerate";
+	this.textInstructions3 = "N - Steer Left";
+	this.textInstructions4 = "M - Steer Right";
+	this.textAuthor = "Written by RobeesWorld.com";
+	
+	// Make some random numbers with a fixed seed
+	this.ptrRnd = 0;
+	this.ptrRndCrash = Math.floor(Math.random() * 10);
+	this.arrRnd = new Array();
+	for (var u = 0; u < 100 + (this.confCrashSteps * 4); u++)
+		this.arrRnd.push(Math.random());
+	
+	// Should we show debug output?
+	this.debug = false;
+
+	// Create the various graphics and sound we will be using
+	this.createMedia();
+	
+	// Call the bind events function which hooks keycodes and starts the game setTimeout loop	
+	this.bindEvents();
+}
+
+ForestRacer.prototype.bindEvents = function() {
+	var self = this;
+	
+	// If a key is pressed, see if it matches one of the game keys and set our keydown object accordingly
+	window.onkeydown = function(event) {
+		for (key in self.keys)
+		{
+			if (event.keyCode == self.keys[key])
+				self.keysdown[key] = true;
+		}
+	};
+	
+	// If a key is released, see if it matches one of the game keys and set our keydown object accordingly
+	window.onkeyup = function(event) {
+		for (key in self.keys)
+		{
+			if (event.keyCode == self.keys[key])
+				self.keysdown[key] = false;
+		}
+	};
+	
+	// Start the game loop
+	this.timeout = setTimeout(function() {
+		self.processFrame();
+	}, this.fr_framems);
+};
+
+ForestRacer.prototype.createMedia = function() {
+	// This is our sunset gradient for the top half of the screen
+	this.gradSunset = this.conCanvas.createLinearGradient(0, 0, 0, this.height / 2);
+	this.gradSunset.addColorStop(0, "#6102B7");
+	this.gradSunset.addColorStop(1, "#E37A1C");
+	
+	// This is our forest floor gradient for the bottom half of the screen
+	this.gradFloor = this.conCanvas.createLinearGradient(0, this.height / 2, 0, this.height);
+	this.gradFloor.addColorStop(0, "#0D2F0F");
+	this.gradFloor.addColorStop(1, "#1F6D23");
+	
+	// Draw them onto our background
+	this.conBackground.fillStyle = this.gradSunset;
+	this.conBackground.fillRect(0, 0, this.width, this.height / 2);
+	this.conBackground.fillStyle = this.gradFloor;
+	this.conBackground.fillRect(0, this.height / 2, this.width, this.height / 2);
+	
+	// Set up our (hopefully preloaded) tree image
+	this.imgTree = new Image();
+	this.imgTree.src = "tree.png";
+	
+	// Set up our (hopefully preloaded) engine audio
+	this.audEngine = document.getElementById("engine");
+	this.explode = document.getElementById("explode");
+	
+	// We need a hidden canvas element to use as a work area
+	this.canWorkCanvas = document.createElement("canvas");
+	this.canWorkCanvas.width = this.imgTree.width;
+	this.canWorkCanvas.height = this.imgTree.height;
+	this.conWorkCanvas = this.canWorkCanvas.getContext("2d");
+	
+	// Now we need to get the image data from our tree for scaling purposes
+	this.conWorkCanvas.drawImage(this.imgTree, 0, 0);
+	this.imdTree = this.conWorkCanvas.getImageData(0, 0, this.imgTree.width, this.imgTree.height);
+	
+	// Create our various tree sizes
+	this.imgScaledTrees = {};
+	
+	// Draw mountains onto our background and capture it as a bitmap
+	this.conCanvas.drawImage(this.canBackground, 0, 0);
+	this.drawMountains();
+	this.imdMountains = this.conCanvas.getImageData(0, Math.floor(this.height / 2) - Math.floor(this.height / this.confMountainHeight), this.width, Math.floor(this.height / this.confMountainHeight));
+};
+
+// This returns a valid image data object for a given tree size, or creates it if required
+ForestRacer.prototype.getTree = function(width, height) {
+	var key = width + "x" + height;
+
+	if (!this.imgScaledTrees[key])
+		this.imgScaledTrees[key] = this.createTree(width, height);
+	
+	return this.imgScaledTrees[key];
+};
+
+// Creates an image data object for a given tree size, and fakes the alpha
+ForestRacer.prototype.createTree = function(width, height) {
+	var posDest = 0;
+	var imgScaledTree = this.conCanvas.createImageData(width, height);
+	
+	var xstep = this.imgTree.width / width;
+	var ystep = this.imgTree.height / height;
+	
+	// First we create a scaled bitmap of the tree
+	for (var y = 0, fltY = 0; y < height; y++, fltY += ystep)
+	{
+		var posY = Math.floor(fltY) * this.imgTree.width * 4;
+		
+		for (var x = 0, fltX = 0; x < width; x++, fltX += xstep)
+		{
+			var posSrc = posY + (Math.floor(fltX) * 4);
+			
+			// Red
+			imgScaledTree.data[posDest++] = this.imdTree.data[posSrc++];
+			// Green
+			imgScaledTree.data[posDest++] = this.imdTree.data[posSrc++];
+			// Blue
+			imgScaledTree.data[posDest++] = this.imdTree.data[posSrc++];
+			// Alpha
+			imgScaledTree.data[posDest++] = this.imdTree.data[posSrc++];
+		}
+	}
+	
+	// Now we need to make an image URL because it preserves transparency
+	// Create a new work canvas because the current will be the wrong size
+	var canWorkCanvas = document.createElement("canvas");
+	canWorkCanvas.width = width;
+	canWorkCanvas.height = height;
+	var conWorkCanvas = canWorkCanvas.getContext("2d");
+	//conWorkCanvas.clearRect(0, 0, width, height);
+	conWorkCanvas.putImageData(imgScaledTree, 0, 0);
+	
+	var objImage = { data: imgScaledTree, imageURL: canWorkCanvas.toDataURL() };
+	objImage.image = new Image();
+	objImage.image.src = objImage.imageURL;
+	
+	return objImage;
+};
+
+// Initialise all the vars which are game specific
+ForestRacer.prototype.initGame = function(intDivisor) {
+	// We store trees in an array, as objects with the relative x position to the user
+	// and the distance from the horizon
+	this.treeLine = [];
+	
+	for (var u = 0; u < this.confLimit; u += (this.treespeed / intDivisor))
+	{
+		var aTree = {};
+		
+		aTree.pos = u;
+		aTree.x = -Math.floor(this.confForestWidth / 8);
+		
+		this.treeLine.unshift(aTree);
+		
+		aTree = {};
+		
+		aTree.pos = u;
+		aTree.x = -Math.floor(this.confForestWidth / 5);
+		
+		this.treeLine.unshift(aTree);
+		
+		aTree = {};
+		aTree.pos = u;
+		aTree.x = Math.floor(this.confForestWidth / 8);
+		
+		this.treeLine.unshift(aTree);
+		
+		aTree = {};
+		aTree.pos = u;
+		aTree.x = Math.floor(this.confForestWidth / 5);
+		
+		this.treeLine.unshift(aTree);
+	}
+	
+	this.crashed = false;
+	this.score = 0;
+	this.level = 1;
+	this.speed = 0.1;
+	this.treespeed = 1;
+	this.accelcounter = 0;
+	// This makes our crash lines slightly different each time
+	this.ptrRndCrash = Math.floor(Math.random() * 10);
+};
+
+// Add a number of trees in the distance
+ForestRacer.prototype.addTreeLine = function() {
+	if (this.treeLine[this.treeLine.length - 1].pos > this.treespeed)
+	{
+		for (var u = 0; u < 3; u++)
+		{
+			// Add a random tree to the line array
+			var aTree = {};
+			aTree.pos = 0;
+			aTree.x = Math.floor(Math.random() * this.confForestWidth)  - Math.floor(this.confForestWidth / 2);
+			
+			this.treeLine.push(aTree);
+		}
+	}
+};
+
+// Process a single game frame
+ForestRacer.prototype.processFrame = function() {
+	var dtStart = new Date();
+	var self = this;
+
+	this.checkKeys();
+	this.gamemode.apply(this);
+	
+	// setInterval is evil, so we avoid it by setting a new timeout once this one is finished
+	// We time how long this frame takes so the next timeout is as close to our target frame
+	// per second time as possible
+	var dtEnd = new Date();
+	var msDiff = dtEnd - dtStart;
+	var msNextFrame = this.fr_framems - msDiff;
+	if (msNextFrame < 1)
+		msNextFrame = 1;
+	
+	this.fr_count++;
+	
+	// Should we show debug info?
+	if (this.debug)
+	{
+		// This is a crude FPS counter
+		this.fr_timer += (this.fr_framems > msDiff) ? this.fr_framems : msDiff;
+		if (this.fr_timer > 1000)
+		{
+			this.fr_fps = this.fr_counter;
+			this.fr_counter = 0;
+			this.fr_timer -= 1000;
+		}
+		this.fr_counter++;
+		this.drawDebug();
+	}
+	
+	// Queue up the next frame
+	this.timeout = setTimeout(function() {
+		self.processFrame();
+	}, msNextFrame);
+};
+
+ForestRacer.prototype.gamePreload = function() {
+	// Initialise the game data if required
+	if (!this.treeLine)
+		this.initGame(1);
+	
+	if (this.treeLine.length)
+	{
+		this.drawBackdrop();
+		
+		if (!this.flashCounter)
+			this.flashCounter = new Date();
+		
+		var dtNow = new Date();
+		if ((dtNow - this.flashCounter) > 500)
+		{
+			if ((dtNow - this.flashCounter) > 1000)
+				this.flashCounter = new Date();
+		}
+		else
+		{
+			this.conCanvas.fillStyle = "white";
+			this.conCanvas.font = "bold 30px Courier New, Courier, monospace";
+			var metrics = this.conCanvas.measureText(this.textWait);
+			this.conCanvas.fillText(this.textWait, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) - 7));
+		}
+		
+		this.drawTrees();
+		this.moveTrees();
+		this.speed = Math.round((this.speed + 0.01) * 100) / 100;
+	}
+	else
+		this.gamemode = this.gamePreStart;
+};
+
+ForestRacer.prototype.gamePreStart = function() {
+	if (!this.keysdown.start)
+	{
+		this.drawBackdrop();
+		this.drawScores();
+		
+		if (!this.flashCounter)
+			this.flashCounter = new Date();
+		
+		this.conCanvas.fillStyle = "white";
+		this.conCanvas.font = "bold 20px Courier New, Courier, monospace";
+		
+		var metrics = this.conCanvas.measureText(this.textInstructions1);
+		this.conCanvas.fillText(this.textInstructions1, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 30));
+		
+		metrics = this.conCanvas.measureText(this.textInstructions2);
+		this.conCanvas.fillText(this.textInstructions2, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 50));
+		
+		metrics = this.conCanvas.measureText(this.textInstructions3);
+		this.conCanvas.fillText(this.textInstructions3, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 70));
+		
+		metrics = this.conCanvas.measureText(this.textInstructions4);
+		this.conCanvas.fillText(this.textInstructions4, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 90));
+		
+		metrics = this.conCanvas.measureText(this.textAuthor);
+		this.conCanvas.fillText(this.textAuthor, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 150));
+		
+		metrics = this.conCanvas.measureText(this.textTitle1);
+		this.conCanvas.fillText(this.textTitle1, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) - 80));
+		
+		metrics = this.conCanvas.measureText(this.textTitle2);
+		this.conCanvas.fillText(this.textTitle2, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) - 50));
+		
+		var dtNow = new Date();
+		if ((dtNow - this.flashCounter) > 500)
+		{
+			if ((dtNow - this.flashCounter) > 1000)
+				this.flashCounter = new Date();
+		}
+		else
+		{
+			metrics = this.conCanvas.measureText(this.textStart);
+			this.conCanvas.fillText(this.textStart, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) - 10));
+		}
+	}
+	else
+	{
+		this.initGame(2);
+		this.gamemode = this.gameInGame;
+	}
+};
+
+ForestRacer.prototype.gameInGame = function() {
+	this.moveKeys();
+	this.moveThings();
+	this.playAudio();
+	this.drawBackdrop();
+	this.drawTrees();
+	this.drawScores();
+	
+	this.addTreeLine();
+};
+
+ForestRacer.prototype.gameOver = function() {
+	if (!this.keysdown.start)
+	{
+		this.drawBackdrop();
+		this.drawTrees();
+		this.drawScores();
+		
+		if (!this.flashCounter)
+			this.flashCounter = new Date();
+		if (!this.overtime)
+			this.overtime = new Date();
+		
+		if (this.crashed)
+		{
+			this.drawCrash();
+			var txtChoice = this.textOver;
+		}
+		else
+		{
+			this.moveTrees();
+			var txtChoice = this.textCongrats;
+		}
+		
+		this.conCanvas.fillStyle = "white";
+		this.conCanvas.font = "bold 20px Courier New, Courier, monospace";
+		
+		var metrics = this.conCanvas.measureText(this.textStart);
+		this.conCanvas.fillText(this.textStart, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 20));
+			
+		var dtNow = new Date();
+		if ((dtNow - this.flashCounter) > 500)
+		{
+			if ((dtNow - this.flashCounter) > 1000)
+				this.flashCounter = new Date();
+		}
+		else
+		{
+			metrics = this.conCanvas.measureText(txtChoice);
+			this.conCanvas.fillText(txtChoice, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) - 10));
+			
+			if (this.score == this.topscore)
+			{
+				metrics = this.conCanvas.measureText(this.textHighScore);
+				this.conCanvas.fillText(this.textHighScore, Math.floor((this.width - metrics.width) / 2), Math.floor((this.height / 2) + 50));
+			}
+		}
+		
+		if ((dtNow - this.overtime) > this.confOverTime)
+		{
+			delete this.overtime;
+			this.gamemode = this.gamePreStart;
+		}
+	}
+	else
+	{
+		delete this.overtime;
+		this.initGame(2);
+		this.gamemode = this.gameInGame;
+	}
+};
+
+ForestRacer.prototype.checkKeys = function() {
+	if (this.keysdown.debug)
+	{
+		this.debug = !this.debug;
+		// This stops us toggling the key every frame
+		this.keysdown.debug = false;
+	}
+};
+
+ForestRacer.prototype.moveKeys = function() {
+	if (this.speed)
+	{
+		if (this.keysdown.left)
+		{
+			this.horizon--;
+			if (this.horizon < 0)
+				this.horizon = this.width - 1;
+			for (var u = 0, len = this.treeLine.length; u < len; u++)
+				this.treeLine[u].x += this.turnspeed;
+		}
+		else if (this.keysdown.right)
+		{
+			this.horizon++;
+			if (this.horizon == this.width)
+				this.horizon = 0;
+			for (var u = 0, len = this.treeLine.length; u < len; u++)
+				this.treeLine[u].x -= this.turnspeed;
+		}
+	}
+	
+	if (this.keysdown.down)
+	{
+		if (this.speed > this.confMinSpeed)
+			this.speed = Math.round((this.speed - 0.01) * 100) / 100;
+	}
+	else if (this.keysdown.up)
+	{
+		if (this.speed < this.confMaxSpeed)
+			this.speed = Math.round((this.speed + 0.01) * 100) / 100;
+	}
+};
+
+ForestRacer.prototype.playAudio = function() {
+	this.audcounter--;
+	if (this.audcounter < 0)
+	{
+		this.audcounter = Math.floor(9 * (this.confMaxSpeed - this.speed));
+		try
+		{
+			this.audEngine.currentTime = 0;
+		}
+		catch (error)
+		{
+		}
+		this.audEngine.play();
+	}
+};
+
+ForestRacer.prototype.moveThings = function() {
+	this.accelcounter++;
+	
+	if (this.accelcounter > this.confFramesPerLevel)
+	{
+		this.level++;
+		if (this.level > this.confMaxLevel)
+		{
+			this.score += 100000;
+			this.gamemode = this.gameOver;
+			this.accelcounter = this.confFramesPerLevel;
+		}
+		else
+		{
+			this.accelcounter = 0;
+			if (this.treespeed > this.confTreeCap)
+			{
+				this.treespeed = Math.round((this.treespeed - 0.1) * 100) / 100;
+			}
+		}
+	}
+	
+	this.score += this.speed * 100;
+	
+	this.moveTrees();
+};
+
+ForestRacer.prototype.moveTrees = function() {
+	this.linepos = Math.round((this.linepos + this.speed) * 100) / 100;
+	if (this.linepos > this.confLineGap)
+		this.linepos = 0;
+	
+	for (var u = 0, len = this.treeLine.length; u < len; u++)
+		this.treeLine[u].pos = Math.round((this.treeLine[u].pos + this.speed) * 100) / 100;
+	
+	for (var u = this.treeLine.length - 1; u >= 0; u--)
+	{
+		if (this.treeLine[u].pos > this.confLimit)
+		{
+			if (Math.abs(this.treeLine[u].x) < (this.confTreeWidth / 7))
+			{
+				if (this.gamemode != this.gameOver)
+				{
+					this.crashed = true;
+					this.speed = 0;
+					this.explode.play();
+					if (this.score > this.topscore)
+						this.topscore = this.score;
+					
+					this.gamemode = this.gameOver;
+				}
+				else
+					this.treeLine.splice(u, 1);
+			}
+			else
+				this.treeLine.splice(u, 1);
+		}
+	}
+};
+
+ForestRacer.prototype.drawBackdrop = function() {
+	this.conCanvas.drawImage(this.canBackground, 0, 0);
+	
+	this.conCanvas.putImageData(this.imdMountains, this.horizon, Math.floor(this.height / 2) - Math.floor(this.height / this.confMountainHeight));
+	if (this.horizon > 0)
+		this.conCanvas.putImageData(this.imdMountains, this.horizon - this.width, Math.floor(this.height / 2) - Math.floor(this.height / this.confMountainHeight));
+	
+	var pos = this.linepos;
+	this.conCanvas.strokeStyle = "black";
+	this.conCanvas.lineWidth = 1;
+	
+	while (pos < this.confLimit)
+	{
+		var scaler = Math.pow(pos / 10, 6);
+		var y = Math.floor(this.height / 2) + (pos * scaler);
+		
+		this.conCanvas.beginPath();
+		this.conCanvas.moveTo(0, y);
+		this.conCanvas.lineTo(this.width, y);
+		this.conCanvas.stroke();
+		
+		pos += this.confLineGap;
+	}
+};
+
+ForestRacer.prototype.drawTrees = function() {
+	// Because newer trees are at the end of the array we iterate backwards
+	// so we draw from back to front
+	for (var u = this.treeLine.length - 1; u >= 0; u--)
+	{
+		var scaler = Math.pow(this.treeLine[u].pos / 10, 6);
+		var x = (this.treeLine[u].x * this.confTreeArea) - this.confTreeGap;
+		x *= scaler;
+		x += Math.floor(this.width / 2);
+		var y = Math.floor(this.confTreeHeight / 2);
+		y *= scaler;
+		y = Math.floor(this.height / 2) - y;
+		var width = this.confTreeWidth;
+		width *= scaler;
+		var height = this.confTreeHeight;
+		height *= scaler;
+		x += Math.floor((width % this.confSize) / 2);
+		y += Math.floor((height % this.confSize) / 2);
+		// Make sure we have integers and not floats
+		width = Math.round(width / this.confSize) * this.confSize;
+		height = Math.round(height / this.confSize) * this.confSize;
+		
+		if (width < this.confSize)
+			width = this.confSize;
+		if (height < this.confSize)
+			height = this.confSize;
+			
+		var imgTree = this.getTree(width, height);
+		if (imgTree)
+			this.conCanvas.drawImage(imgTree.image, x, y);
+	}
+};
+
+ForestRacer.prototype.drawScores = function() {
+	this.conCanvas.fillStyle = "white";
+	this.conCanvas.font = "bold 13px Courier New, Courier, monospace";
+	
+	var strScore = "TOP SCORE: " + this.topscore;
+	var metrics = this.conCanvas.measureText(strScore);
+	this.conCanvas.fillText(strScore, this.width - metrics.width - 10, 20);
+	this.conCanvas.fillText("SCORE: " + this.score, 10, 20);
+	
+	var lenLevel = Math.floor(((this.width - 24) / this.confFramesPerLevel) * this.accelcounter);
+	this.conCanvas.fillStyle = "blue";
+	this.conCanvas.strokeRect(10, 30, this.width - 20, 20);
+	this.conCanvas.fillRect(12, 32, lenLevel, 16);
+
+	this.conCanvas.fillStyle = "white";
+	var strLevel = "LEVEL: " + this.level;
+	metrics = this.conCanvas.measureText(strLevel);
+	this.conCanvas.fillText(strLevel, (this.width - metrics.width) / 2, 43);
+};
+
+ForestRacer.prototype.drawMountains = function() {
+	this.ptrRnd = 0;
+	
+	var max = Math.floor(this.height / this.confMountainHeight);
+	var x = 0;
+	var lastx = 0;
+	var y = Math.floor(this.height / 2);
+	
+	//this.conCanvas.strokeStyle = "white";
+	this.conCanvas.fillStyle = "black";
+	
+	while(true)
+	{
+		lastx = x;
+		x = this.drawTriangle(x, y, max);
+		if (x >= this.width)
+			break;
+		x -= Math.floor(max / 2);
+	}
+
+	this.ptrRnd -= 3;
+	x = -(this.width - lastx);
+	this.drawTriangle(x, y, max);
+};
+
+ForestRacer.prototype.drawTriangle = function(x, y, max) {
+	this.conCanvas.beginPath();
+	this.conCanvas.moveTo(x, y);
+	x += Math.floor((max / 2) + (this.arrRnd[this.ptrRnd++] * (max / 2)));
+	this.conCanvas.lineTo(x, y - Math.floor((max / 2) + (this.arrRnd[this.ptrRnd++] * (max / 2))));
+	x += Math.floor((max / 2) + (this.arrRnd[this.ptrRnd++] * (max / 2)));
+	this.conCanvas.lineTo(x, y);
+	this.conCanvas.fill();
+	
+	return x;
+};
+
+ForestRacer.prototype.drawCrash = function() {
+	this.ptrRnd = this.ptrRndCrash;
+	this.conCanvas.strokeStyle = "rgba(255,255,255,0.7)";
+	this.conCanvas.lineWidth = 2;
+	this.drawCrackLine(-1, -1);
+	this.drawCrackLine(1, -1);
+	this.drawCrackLine(-1, 1);
+	this.drawCrackLine(1, 1);
+};
+
+ForestRacer.prototype.drawCrackLine = function(deltax, deltay) {
+	var x = Math.floor(this.width / 2);
+	var y = Math.floor(this.height / 2);
+	var max = Math.floor(this.width / this.confCrashSteps);
+	
+	this.conCanvas.beginPath();
+	this.conCanvas.moveTo(x, y);
+	for (var u = 0; u < (this.confCrashSteps * 2); u++)
+	{
+		x += Math.floor((this.arrRnd[this.ptrRnd++] * max) * deltax);
+		y += Math.floor((this.arrRnd[this.ptrRnd++] * max) * deltay);
+		this.conCanvas.lineTo(x, y);
+	}
+	this.conCanvas.stroke();
+};
+
+ForestRacer.prototype.drawDebug = function() {
+	this.conCanvas.fillStyle = "white";
+	this.conCanvas.font = "13px Courier New, Courier, monospace";
+	this.conCanvas.fillText("Frame: " + this.fr_count, 5, this.height - 15);
+	this.conCanvas.fillText("FPS: " + this.fr_fps + "/" + this.fr_target, this.width - 90, this.height - 15);
+	this.conCanvas.fillText("Speed: " + this.speed + ", Tree Speed: " + this.treespeed, 5, this.height - 30);
+	this.conCanvas.fillText("Horizon: " + this.horizon, this.width - 120, this.height - 30);
+	this.conCanvas.fillText("Keys Pressed: " + (this.keysdown.left? "LEFT " : "") + (this.keysdown.right? "RIGHT " : "") + (this.keysdown.up? "UP " : "") + (this.keysdown.down? "DOWN " : "") + (this.keysdown.start? "START" : ""), 5, this.height - 55);
+};
